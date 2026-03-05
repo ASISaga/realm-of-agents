@@ -1,4 +1,12 @@
 # Realm of Agents submodules
+[submodule "purpose-driven-agent"]
+	path = agents/purpose-driven-agent
+	url = https://github.com/ASISaga/purpose-driven-agent
+
+[submodule "leadership-agent"]
+	path = agents/leadership-agent
+	url = https://github.com/ASISaga/leadership-agent
+
 [submodule "FineTunedLLM"]
 	path = RealmOfAgents/FineTunedLLM
 	url = https://github.com/ASISaga/FineTunedLLM
@@ -18,10 +26,6 @@
 [submodule "GitHubAgent"]
 	path = RealmOfAgents/GitHubAgent
 	url = https://github.com/ASISaga/GitHubAgent
-
-[submodule "AgentOperatingSystem"]
-	path = AgentOperatingSystem
-	url = https://github.com/ASISaga/AgentOperatingSystem
 
 [submodule "LeadershipAgent"]
 	path = RealmOfAgents/LeadershipAgent
