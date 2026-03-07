@@ -15,30 +15,30 @@ description: "Python coding standards: PEP 8, async, type hints, AOS SDK pattern
 
 ## Async Patterns
 
-All workflows are `async` functions using `await`:
+Azure Functions HTTP handlers are `async` functions using `await`:
 
 ```python
-@app.workflow("workflow-name")
-async def my_workflow(request: WorkflowRequest) -> Dict[str, Any]:
-    agents = await request.client.list_agents()
-    status = await request.client.start_orchestration(...)
-    return {"orchestration_id": status.orchestration_id, "status": status.status.value}
+@app.route(route="realm/agents", methods=["GET"])
+async def list_agents(req: func.HttpRequest) -> func.HttpResponse:
+    registry = _load_registry()              # sync — file I/O, no await needed
+    await _ensure_foundry_registration(registry)  # async — calls Foundry API
+    return func.HttpResponse(json.dumps(...), mimetype="application/json")
 ```
 
-- **Always `await`** SDK calls — they are all coroutines
+- **Always `await`** coroutine calls (e.g. `_ensure_foundry_registration`)
 - Use `asyncio_mode = "auto"` (configured in `pyproject.toml`) for pytest-asyncio
 - Avoid blocking I/O in async functions
 
 ## Type Hints
 
 ```python
-from typing import Any, Dict, List, Callable
+from typing import Any, Dict, List, Optional
 
-async def select_c_suite_agents(client: AOSClient) -> List[AgentDescriptor]: ...
-async def my_workflow(request: WorkflowRequest) -> Dict[str, Any]: ...
+async def _load_registry() -> AgentRegistry: ...
+async def _ensure_foundry_registration(registry: AgentRegistry) -> None: ...
 ```
 
-- Use `Dict`, `List`, `Any` from `typing` for Python 3.10 compatibility
+- Use `Dict`, `List`, `Any`, `Optional` from `typing` for Python 3.10 compatibility
 - Use `Callable[[ArgType], ReturnType]` for function parameters
 
 ## Imports
@@ -48,10 +48,14 @@ Order: stdlib → third-party → local, with blank lines between groups:
 ```python
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
-from aos_client import AOSApp, WorkflowRequest
+import azure.functions as func
+from pydantic import BaseModel
+
+from agent_config_schema import AgentRegistry, AgentRegistryEntry
 ```
 
 ## Logging
@@ -83,7 +87,7 @@ pylint src/                                   # Lint
 
 - Use `pytest` classes (not `unittest.TestCase`)
 - Use descriptive test method names: `test_<what>_<condition>`
-- Test constants, registration counts, and negative assertions (things that should NOT be registered)
+- Test schema validation, registry loading, filtering, and negative assertions
 
 ## Tool Integration
 
@@ -98,6 +102,5 @@ pip install -e ".[dev]"   # Install dependencies
 → **Repository spec**: `.github/specs/repository.md`  
 → **Azure Functions patterns**: `.github/instructions/azure-functions.instructions.md`  
 → **Conventional tools**: `.github/docs/conventional-tools.md`  
-→ **Agent guidelines**: `/docs/specifications/github-copilot-agent-guidelines.md`  
-→ **Architecture**: `/docs/specifications/architecture.md`  
-→ **Build & deployment**: `/docs/specifications/build-deployment.md`
+→ **Architecture**: `docs/architecture.md`  
+→ **API reference**: `docs/api-reference.md`

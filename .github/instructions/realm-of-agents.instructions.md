@@ -1,3 +1,8 @@
+---
+applyTo: "src/**,tests/**"
+description: "RealmOfAgents config-driven agent catalog: registry schema, Foundry registration, and endpoint patterns"
+---
+
 # RealmOfAgents Instructions
 
 ## Overview

@@ -1,160 +1,108 @@
 ---
 applyTo: "src/**/*.py,function_app.py,tests/**/*.py"
-description: "Azure Functions and AOS workflow patterns for Python repositories"
+description: "Azure Functions and Foundry Agent Service patterns for RealmOfAgents"
 ---
 
-# Azure Functions & AOS Workflow Patterns
+# Azure Functions & Foundry Agent Patterns
 
-## AOSApp Setup
+## Function App Setup
 
-Every workflow module starts with a single `AOSApp` instance:
+RealmOfAgents uses native `azure-functions` with a top-level `FunctionApp` instance:
 
 ```python
-from aos_client import AOSApp, ObservabilityConfig
+import azure.functions as func
 
-# App name comes from repository spec — see .github/specs/repository.md
-app = AOSApp(
-    name="<app-name>",
-    observability=ObservabilityConfig(
-        structured_logging=True,
-        correlation_tracking=True,
-        health_checks=["aos", "service-bus"],
-    ),
-)
+app = func.FunctionApp()
 ```
 
-The SDK provisions HTTP triggers, Service Bus triggers, health endpoints, and auth — **no boilerplate needed here**.
+No SDK-managed app wrapper — all HTTP trigger decorators are applied directly to `app`.
 
-## Workflow Registration
+## HTTP Endpoint Pattern
 
 ```python
-@app.workflow("workflow-name")
-async def workflow_fn(request: WorkflowRequest) -> Dict[str, Any]:
-    ...
+@app.function_name("list_agents")
+@app.route(route="realm/agents", methods=["GET"])
+async def list_agents(req: func.HttpRequest) -> func.HttpResponse:
+    registry = _load_registry()
+    await _ensure_foundry_registration(registry)
+    payload = {"agents": [a.model_dump() for a in registry.get_enabled_agents()]}
+    return func.HttpResponse(json.dumps(payload), mimetype="application/json")
 ```
 
-- Workflow names use `kebab-case`
-- Return `{"orchestration_id": ..., "status": ...}` for orchestration starters
-- Return plain data dicts for query/lookup workflows
+- Always use `json.dumps(...)` + `mimetype="application/json"` for JSON responses
+- Return `status_code=404` + error dict for missing resources
+- Return `status_code=503` + error dict for health check failures
 
-## Azure Functions Entry Point
+## Registry Loading Pattern
+
+Load the registry once and cache it in a module-level variable (synchronous — no I/O awaiting needed):
 
 ```python
-# function_app.py — zero boilerplate
-from <package>.workflows import app
-functions = app.get_functions()
+import os
+
+_registry: Optional[AgentRegistry] = None
+
+def _load_registry() -> AgentRegistry:
+    global _registry
+    if _registry is not None:
+        return _registry
+    registry_path = os.environ.get("AGENT_REGISTRY_PATH", "example_agent_registry.json")
+    with open(registry_path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    _registry = AgentRegistry(**data)
+    return _registry
 ```
 
-Never add Azure Functions decorators directly to `function_app.py`.
+## Foundry Registration Pattern
 
-## Orchestration Patterns
-
-### Perpetual orchestration (most workflows)
+Register enabled agents with the Foundry Agent Service once per function app lifetime:
 
 ```python
-status = await request.client.start_orchestration(
-    agent_ids=agent_ids,
-    purpose="Describe the ongoing goal",
-    purpose_scope="Scope of responsibility",
-    context=request.body,
-)
-return {"orchestration_id": status.orchestration_id, "status": status.status.value}
+_foundry_registered: bool = False
+
+async def _ensure_foundry_registration(registry: AgentRegistry) -> None:
+    global _foundry_registered
+    if _foundry_registered:
+        return
+    for entry in registry.get_enabled_agents():
+        if _agent_manager is not None:
+            await _agent_manager.register_agent(
+                agent_id=entry.agent_id,
+                purpose=entry.purpose,
+                name=entry.agent_id,
+                adapter_name=entry.adapter_name,
+                capabilities=entry.capabilities,
+            )
+    _foundry_registered = True
 ```
 
-### Sequential workflow
+- Registration is **idempotent** — guarded by `_foundry_registered`
+- `_agent_manager` is `None` when `AgentOperatingSystem` is unavailable (stub mode)
+
+## Agent Registry Schema
+
+Use the Pydantic models from `agent_config_schema`:
 
 ```python
-status = await request.client.start_orchestration(
-    ...,
-    workflow="sequential",
-)
-```
+from agent_config_schema import AgentRegistry, AgentRegistryEntry
 
-### Hierarchical workflow
-
-```python
-status = await request.client.start_orchestration(
-    ...,
-    workflow="hierarchical",
-)
-```
-
-### Advanced: `OrchestrationRequest` with MCP servers
-
-```python
-from aos_client import MCPServerConfig, OrchestrationPurpose, OrchestrationRequest
-
-req = OrchestrationRequest(
-    agent_ids=agent_ids,
-    purpose=OrchestrationPurpose(purpose=..., purpose_scope=...),
-    context=request.body,
-    mcp_servers={agent_id: [MCPServerConfig(server_name="erp")]},
-)
-status = await request.client.submit_orchestration(req)
-```
-
-## Update Handlers
-
-```python
-@app.on_orchestration_update("workflow-name")
-async def handle_update(update) -> None:
-    logger.info("Update from %s: %s", update.agent_id, update.output)
-```
-
-## MCP Tool Registration
-
-```python
-@app.mcp_tool("tool-name")
-async def my_tool(request) -> Any:
-    return await request.client.call_mcp_tool("server", "method", request.body)
-```
-
-## C-Suite Agent Selection Pattern
-
-```python
-C_SUITE_AGENT_IDS = ["ceo", "cfo", "cmo", "coo", "cto", "cso"]
-C_SUITE_TYPES = {"LeadershipAgent", "CMOAgent", "CEOAgent", "CFOAgent", "CTOAgent", "CSOAgent"}
-
-async def select_c_suite_agents(client: AOSClient) -> List[AgentDescriptor]:
-    all_agents = await client.list_agents()
-    by_id = {a.agent_id: a for a in all_agents}
-    selected = [by_id[aid] for aid in C_SUITE_AGENT_IDS if aid in by_id]
-    if not selected:
-        selected = [a for a in all_agents if a.agent_type in C_SUITE_TYPES]
-    return selected
-```
-
-## Workflow Template (Reuse Pattern)
-
-```python
-from aos_client import workflow_template
-
-@workflow_template
-async def c_suite_orchestration(request, agent_filter, purpose, purpose_scope):
-    agents = await select_c_suite_agents(request.client)
-    agent_ids = [a.agent_id for a in agents if agent_filter(a)]
-    if not agent_ids:
-        raise ValueError("No matching agents available in the catalog")
-    status = await request.client.start_orchestration(
-        agent_ids=agent_ids, purpose=purpose, purpose_scope=purpose_scope,
-        context=request.body,
-    )
-    return {"orchestration_id": status.orchestration_id, "status": status.status.value}
+registry = AgentRegistry(**data)
+enabled  = registry.get_enabled_agents()          # List[AgentRegistryEntry]
+agent    = registry.get_agent("ceo")              # Optional[AgentRegistryEntry]
+leaders  = registry.filter_by_type("LeadershipAgent")
 ```
 
 ## Validation
 
 ```bash
 pytest tests/ -v                    # Run all tests
-pytest tests/ -v -k "workflow"      # Run workflow-specific tests
-pylint src/                          # Lint workflows
+pylint src/                         # Lint
 ```
 
 ## Related Documentation
 
 → **Repository spec**: `.github/specs/repository.md`  
 → **Python standards**: `.github/instructions/python.instructions.md`  
-→ **Conventional tools**: `.github/docs/conventional-tools.md`  
-→ **Architecture**: `/docs/specifications/architecture.md`  
-→ **Agent guidelines**: `/docs/specifications/github-copilot-agent-guidelines.md`  
-→ **Build & deployment**: `/docs/specifications/build-deployment.md`
+→ **Architecture**: `docs/architecture.md`  
+→ **API reference**: `docs/api-reference.md`  
+→ **Migration to Foundry**: `docs/MIGRATION_TO_FOUNDRY.md`
